@@ -9,9 +9,8 @@ import logging, scipy
 
 import tensorflow as tf
 import tensorlayer as tl
-from dilated_pro_model import *
-from gan_utils import *
-from config_320 import config, log_config
+from models import *
+from utils import *
 from random import shuffle
 
 parser = argparse.ArgumentParser()
@@ -21,7 +20,8 @@ parser.add_argument('--dataset_path', help="/path/to/data")
 parser.add_argument('--batch_size', help="# of images per batch", default=4)
 parser.add_argument('--lr', help="Learning Rate", default=.00001)
 parser.add_argument('--model', help="MSSRGAN, MSSR, or SRGAN", default="MSSRGAN")
-parser.add_argument('--epochs', help="# of epocs", default
+parser.add_argument('--checkpoint')
+parser.add_argument('--texture_only', action='store_true')
 
 args = parser.parse_args()
 
@@ -34,8 +34,6 @@ beta1 = 0.9
 ## adversarial learning (SRGAN)
 lr_decay = 0.1
 
-ni = int(np.sqrt(batch_size))
-
 if args.dataset == "WV3":
     target_size = [40, 80, 160, 320]
     ginit_epoch = [100, 100, 100, 100]
@@ -44,8 +42,8 @@ if args.dataset == "WV3":
 
 else:
     target_size = [16, 32, 64, 128]
-    ginit_epoch = [100, 100, 100, 100]
-    gans_epoch = [150, -1, -1, 250]
+    ginit_epoch = [20, -1, -1, -1]
+    gans_epoch = [150, -1, -1, 70]
     loss_parameters = []
 
 if args.model == "MSSR":
@@ -68,18 +66,12 @@ def read_all_imgs(img_list, path='', n_threads=32):
 
 def train(pg, train_hr_imgs):
     ## create folders to save result images and trained model
-    save_dir_model_init = os.path.join(args.dataset_path, "/train_init_{}".format(args.dataset)
-    save_dir_model = os.path.join(args.dataset_path, "/train_{}".format(args.dataset)
+    save_dir_model_init = os.path.join(args.dataset_path, "train_init_{}_{}".format(args.dataset,args.checkpoint))
+    save_dir_model = os.path.join(args.dataset_path, "train_{}_{}".format(args.dataset,args.checkpoint))
     tl.files.exists_or_mkdir(save_dir_model_init)
     tl.files.exists_or_mkdir(save_dir_model)
-    checkpoint_dir = os.path.join(args.dataset_path, "/checkpoint_{}".format(args.dataset))
+    checkpoint_dir = os.path.join(args.dataset_path, "checkpoint_{}_{}".format(args.dataset,args.checkpoint))
     tl.files.exists_or_mkdir(checkpoint_dir)
-
-    ###====================== PRE-LOAD DATA ===========================###
-    train_hr_img_list = sorted(tl.files.load_file_list(path=os.path.join(args.dataset_path, args.dataset, 'train_images_hr'), regx='.*.png', printable=False))
-    train_lr_img_list = sorted(tl.files.load_file_list(path=os.path.join(args.dataset_path, args.dataset, 'train_images_lr'), regx='.*.png', printable=False))
-    valid_hr_img_list = sorted(tl.files.load_file_list(path=os.path.join(args.dataset_path, args.dataset, 'valid_images_hr'), regx='.*.png', printable=False))
-    valid_lr_img_list = sorted(tl.files.load_file_list(path=os.path.join(args.dataset_path, args.dataset, 'valid_images_lr'), regx='.*.png', printable=False))
 
     ###========================== DEFINE MODEL ============================###
     ## train inference
@@ -91,13 +83,18 @@ def train(pg, train_hr_imgs):
          net_d, _, logits_real = MSSRGAN_d(t_target_image, is_train=True, reuse=tf.AUTO_REUSE, pg=pg)
          _,     _, logits_fake = MSSRGAN_d(net_g.outputs, is_train=True, reuse=tf.AUTO_REUSE, pg=pg)
 
+    if args.model == "MSSRGAN_texture":
+        net_g, _ = MSSRGAN_texture_g_2(t_image, is_train=True, reuse=tf.AUTO_REUSE, pg=pg)
+        net_d, _, logits_real = MSSRGAN_d(t_target_image, is_train=True, reuse=tf.AUTO_REUSE, pg=pg)
+        _, _, logits_fake = MSSRGAN_d(net_g.outputs, is_train=True, reuse=tf.AUTO_REUSE, pg=pg)
+
     elif args.model == "SRGAN":
          net_g = SRGAN_g(t_image, is_train=True)
          net_d, _, logits_real = SRGAN_d(t_target_image, is_train=True)
          _,     _, logits_fake = SRGAN_d(net_g.outputs, is_train=True, reuse=tf.AUTO_REUSE)
 
     elif args.model == "MSSR":
-         net_g = MSSR_G(t_image, is_train=True
+         net_g = MSSR_G(t_image, is_train=True)
 
     net_g.print_params(False)
     net_d.print_params(False)
@@ -113,6 +110,9 @@ def train(pg, train_hr_imgs):
     if args.model == "MSSRGAN":
          net_g_test = MSSRGAN_g(t_image, is_train=False, reuse=tf.AUTO_REUSE, pg=pg)
 
+    elif args.model == "MSSRGAN_texture":
+        net_g_test, _ = MSSRGAN_texture_g_2(t_image, is_train=False, reuse=tf.AUTO_REUSE, pg=pg)
+
     elif args.model == "SRGAN":
          net_g_test = SRGAN_g(t_image, is_train=False, reuse=tf.AUTO_REUSE)
 
@@ -120,9 +120,9 @@ def train(pg, train_hr_imgs):
          net_g_test = MSSR_G(t_image, is_train=False, reuse=tf.AUTO_REUSE)
 
     # ###========================== DEFINE TRAIN OPS ==========================###i
-    if args.model == "MSSRGAN":
+    if "MSSRGAN" in args.model:
         d_loss = (tf.reduce_mean(logits_fake) - tf.reduce_mean(logits_real))
-        g_gan_loss = 5e-3 * -tf.reduce_mean(logits_fake)
+        g_gan_loss = 7.5e-3 * -tf.reduce_mean(logits_fake)
     
     elif args.model == "SRGAN":
         d_loss1 = tl.cost.sigmoid_cross_entropy(logits_real, tf.ones_like(logits_real), name='d1')
@@ -130,7 +130,8 @@ def train(pg, train_hr_imgs):
         d_loss = d_loss1 + d_loss2
         g_gan_loss = 2e-4 * tl.cost.sigmoid_cross_entropy(logits_fake, tf.ones_like(logits_fake), name='g')
     
-    mse_loss = .5 * tl.cost.mean_squared_error(net_g.outputs , t_target_image, is_mean=True)
+    #mse_loss = .5 * tl.cost.mean_squared_error(net_g.outputs , t_target_image, is_mean=True)
+    mse_loss = .3 * tl.cost.mean_squared_error(net_g.outputs , t_target_image, is_mean=True)
     vgg_loss = 5e-7 * tl.cost.mean_squared_error(vgg_predict_emb.outputs, vgg_target_emb.outputs, is_mean=True)
 
     if args.model != "MSSR":
@@ -141,9 +142,10 @@ def train(pg, train_hr_imgs):
     g_vars = tl.layers.get_variables_with_name('SRGAN_g', True, True)
     d_vars = tl.layers.get_variables_with_name('SRGAN_d', True, True)
 
-    if args.model == "MSSRGAN":
+    if "MSSRGAN" in args.model:
         g_old_vars = []
-        for i in range(1,pg):
+        # for i in range(1,pg + 1):
+        for i in range(1, pg + 1): #Use this line to only train GANs
             old_vars = [var for var in g_vars if 'pg{}'.format(i) in var.name]
             g_old_vars = g_old_vars + old_vars
 
@@ -151,7 +153,7 @@ def train(pg, train_hr_imgs):
 
     #init_restorer = tf.train.Saver(g_new_vars)
 
-    if pg != 1 and args.model == "MSSRGAN":
+    if pg != 1 and "MSSRGAN" in args.model:
         init_restorer = tf.train.Saver(g_old_vars)
     else:
         init_restorer = tf.train.Saver(g_new_vars)
@@ -169,13 +171,15 @@ def train(pg, train_hr_imgs):
         g_optim = tf.train.AdamOptimizer(lr_v, beta1=beta1).minimize(g_loss, var_list=g_vars)
         d_optim = tf.train.AdamOptimizer(lr_v, beta1=beta1).minimize(d_loss, var_list=d_vars)
 
-    elif args.model == "MSSRGAN":
-        g_optim = tf.train.RMSPropOptimizer(lr_v,name='RMS_g_{}'.format(pg)).minimize(g_loss, var_list=g_new_vars, name='min_g_{}'.format(pg))
+    elif "MSSRGAN" in args.model:
+        g_optim = tf.train.RMSPropOptimizer(1e-5,name='RMS_g_{}'.format(pg)).minimize(g_loss, var_list=g_new_vars, name='min_g_{}'.format(pg))
         d_optim = tf.train.RMSPropOptimizer(1e-5,name='RMS_d_{}'.format(pg)).minimize(d_loss, var_list=d_vars, name='min_d_{}'.format(pg))
         clip_op = [tf.assign(var, tf.clip_by_value(var, -0.01, 0.01)) for var in d_vars]
 
     ###========================== RESTORE MODEL =============================###
-    sess = tf.Session(config=tf.ConfigProto(allow_soft_placement=True, log_device_placement=False))
+    config = tf.ConfigProto(allow_soft_placement=True, log_device_placement=False)
+    config.gpu_options.allow_growth=True
+    sess = tf.Session(config=config)
     tl.layers.initialize_global_variables(sess)
     
     if os.path.isfile(checkpoint_dir+'/gan.ckpt.meta'):
@@ -205,14 +209,14 @@ def train(pg, train_hr_imgs):
 
     train_lr_imgs = tl.prepro.threading_data(train_hr_imgs, fn=crop_sub_imgs_fn, size=target_size[pg])
     train_hr_imgs = tl.prepro.threading_data(train_hr_imgs, fn=crop_sub_imgs_fn, size=target_size[3])
-    sample_imgs = train_lr_imgs[0 : batch_size]
+    sample_imgs = train_lr_imgs[1000 : 1000 + batch_size]
     sample_imgs_target = sample_imgs[0 : batch_size]
-    sample_imgs_start = tl.prepro.threading_data(train_hr_imgs[0 : batch_size], fn=downsample_fn, size=target_size[0], target_size=target_size[3])
-    
-    tl.vis.save_images(sample_imgs_start, [ni, ni], save_dir_model_init+'/_train_sample_{}.png'.format(target_size[0]))
-    tl.vis.save_images(sample_imgs_target, [ni, ni], save_dir_model_init+'/_train_sample_{}.png'.format(target_size[pg]))
-    tl.vis.save_images(sample_imgs_start, [ni, ni], save_dir_model+'/_train_sample_{}.png'.format(target_size[0]))
-    tl.vis.save_images(sample_imgs_target, [ni, ni], save_dir_model+'/_train_sample_{}.png'.format(target_size[pg]))
+    sample_imgs_start = tl.prepro.threading_data(train_hr_imgs[1000 : 1000 + batch_size], fn=downsample_fn, size=target_size[0], target_size=target_size[3])
+    for img_idx in range(sample_imgs_start.shape[0]):    
+        tl.vis.save_image(sample_imgs_start[img_idx], save_dir_model_init+'/_train_sample_{}_{}.png'.format(target_size[0], img_idx))
+        tl.vis.save_image(sample_imgs_target[img_idx], save_dir_model_init+'/_train_sample_{}_{}.png'.format(target_size[pg], img_idx))
+        tl.vis.save_image(sample_imgs_start[img_idx], save_dir_model+'/_train_sample_{}_{}.png'.format(target_size[0], img_idx))
+        tl.vis.save_image(sample_imgs_target[img_idx], save_dir_model+'/_train_sample_{}_{}.png'.format(target_size[pg], img_idx))
     
     print('done saving samples')
     
@@ -239,10 +243,11 @@ def train(pg, train_hr_imgs):
         print(log)
 
         ## quick evaluation on train set
-        if (epoch != 0) and (epoch % 10 == 0):
+        if (epoch != 0) and (epoch % 5 == 0):
             out, errM = sess.run([net_g_test.outputs, mse_loss], {t_image: sample_imgs_start, t_target_image: b_imgs_target})
             print("[*] save images")
-            tl.vis.save_images(out, [ni, ni], save_dir_model_init+'/train_{}_{}_output.png'.format(pg,epoch))
+            for img_idx in range(out.shape[0]):
+                tl.vis.save_image(out[img_idx], save_dir_model_init+'/train_{}_{}_{}.png'.format(pg,epoch,img_idx))
 
         ## save model
         if (epoch != 0) and (epoch % 10 == 0):
@@ -276,7 +281,7 @@ def train(pg, train_hr_imgs):
             errD, _ = sess.run([d_loss, d_optim], {t_image: b_imgs_start, t_target_image: b_imgs_target})
             total_d_loss += errD
             d_iter += 1
-            if args.model == "MSSRGAN":
+            if "MSSRGAN" in args.model:
                 sess.run(clip_op)
 
             ## update G
@@ -290,22 +295,142 @@ def train(pg, train_hr_imgs):
                 print(log)
 
         ## quick evaluation on train set
-        if (epoch != 0) and (epoch % 10 == 0):
+        if (epoch != 0) and (epoch % 5 == 0):
             out = sess.run(net_g_test.outputs, {t_image: sample_imgs_start})
             print("[*] save images")
-            tl.vis.save_images(out, [ni, ni], save_dir_model+'/train_{}_{}.png'.format(pg,epoch))
+            for img_idx in range(out.shape[0]):
+                tl.vis.save_image(out[img_idx], save_dir_model+'/train_{}_{}_{}.png'.format(pg,epoch,img_idx))
 
         ## save model
         if (epoch != 0) and (epoch % 10 == 0):
             saver.save(sess, checkpoint_dir+'/gan.ckpt')
 
-if __name__ == '__main__':
 
-    train_hr_img_list = sorted(tl.files.load_file_list(path=os.path.join(args.dataset_path, args.dataset, '/train_images_hr', regx='.*.jpg', printable=False))
-    train_hr_imgs = read_all_imgs(train_hr_img_list, path=path=os.path.join(args.dataset_path, args.dataset, '/train_images_hr', n_threads=32)
+def train_texture(train_hr_imgs):
+    ## create folders to save result images and trained model
+    save_dir_model = os.path.join(args.dataset_path, "train_texture_{}_{}".format(args.dataset,args.checkpoint))
+    tl.files.exists_or_mkdir(save_dir_model)
+    checkpoint_dir = os.path.join(args.dataset_path, "checkpoint_{}_{}".format(args.dataset,args.checkpoint))
+    tl.files.exists_or_mkdir(checkpoint_dir)
+
+
+    ###========================== DEFINE MODEL ============================###
+    ## train inference
+    t_image = tf.placeholder('float32', [batch_size, target_size[0], target_size[0], 3],
+                             name='t_image_input_to_generator')
+    t_target_image = tf.placeholder('float32', [batch_size, target_size[3], target_size[3], 3], name='t_target_image')
+
+    net_g, _ = MSSRGAN_texture_g_2(t_image, is_train=False, reuse=tf.AUTO_REUSE, pg=3)
+    net_texture = MS_texture(net_g.outputs, is_train=True, reuse=tf.AUTO_REUSE)
+
+    ## test inference
+    net_g_test, _ = MSSRGAN_texture_g_2(t_image, is_train=False, reuse=tf.AUTO_REUSE, pg=3)
+    net_texture_test = MS_texture(net_g_test.outputs, is_train=False, reuse=tf.AUTO_REUSE)
+     
+    ####========================== DEFINE TRAIN OPS ==========================###i
+    diff = t_target_image - net_g.outputs
+    diff_positive = tf.keras.activations.relu(diff, threshold=.1)
+    diff_negative = tf.multiply(tf.keras.activations.relu(tf.multiply(diff, -1), threshold=.1), -1)
+
+    diff = tf.add(diff_negative, diff_positive)
+    mse_mask = tf.add(tf.multiply(tf.cast(tf.equal(diff, 0.), tf.float32), 19), 1)
+    penalized_output = tf.multiply(mse_mask, net_texture.outputs)
+    texture_loss = tl.cost.mean_squared_error(penalized_output, diff, is_mean=True)
+
+    g_vars = tl.layers.get_variables_with_name('SRGAN_g', True, True)
+    texture_vars = tl.layers.get_variables_with_name('texture', True, True)
+
+    g_old_vars = []
+    for i in range(1, 4):
+        old_vars = [var for var in g_vars if 'pg{}'.format(i) in var.name]
+        g_old_vars = g_old_vars + old_vars
+
+    init_restorer = tf.train.Saver(g_old_vars)
+
+    saver = tf.train.Saver(texture_vars)
+
+    with tf.variable_scope('learning_rate'):
+        lr_v = tf.Variable(lr_init, trainable=False)
+
+    texture_optim = tf.train.AdamOptimizer(lr_v, beta1=beta1, name='texture_optimizer').minimize(texture_loss,
+                                                                                                var_list=texture_vars,
+                                                                                                name='min_texture')
+    ###========================== RESTORE MODEL =============================### 
+    config = tf.ConfigProto(allow_soft_placement=True, log_device_placement=False)
+    config.gpu_options.allow_growth=True
+    sess = tf.Session(config=config)
+    tl.layers.initialize_global_variables(sess)
+
+    init_restorer.restore(sess, checkpoint_dir + '/gan.ckpt')
+
+    ###============================= TRAINING ===============================###
+    ## use first `batch_size` of train set to have a quick test during training
+
+    train_hr_imgs = tl.prepro.threading_data(train_hr_imgs, fn=crop_sub_imgs_fn, size=target_size[3])
+    sample_imgs_target = train_hr_imgs[1000: 1000 + batch_size]
+    sample_imgs_start = tl.prepro.threading_data(train_hr_imgs[1000: 1000 + batch_size], fn=downsample_fn, size=target_size[0],
+                                                 target_size=target_size[3])
+
+    for img_idx in range(sample_imgs_start.shape[0]):
+        tl.vis.save_image(sample_imgs_start[img_idx], save_dir_model + '/_train_sample_{}_{}.png'.format(target_size[0],img_idx))
+        tl.vis.save_image(sample_imgs_target[img_idx], save_dir_model + '/_train_sample_{}_{}.png'.format(target_size[3],img_idx))
+
+    print('done saving samples')
+
+    ###========================= initialize G ====================###
+    ## fixed learning rate
+    sess.run(tf.assign(lr_v, lr_init))
+    print(" ** fixed learning rate: %f (for init G)" % lr_init)
+
+    #for epoch in range(0, ginit_epoch[3] + 1):
+    for epoch in range(0, 41):
+        epoch_time = time.time()
+        total_texture_loss, n_iter = 0, 0
+
+        for idx in range(0, len(train_hr_imgs), batch_size):
+            step_time = time.time()
+            b_imgs_target = train_hr_imgs[idx: idx + batch_size]
+            b_imgs_start = tl.prepro.threading_data(train_hr_imgs[idx: idx + batch_size], fn=downsample_fn,
+                                                    size=target_size[0], target_size=target_size[3])
+            ## update G
+            errT, _ = sess.run([texture_loss, texture_optim], {t_image: b_imgs_start, t_target_image: b_imgs_target})
+            print("Epoch [%2d/%2d] %4d time: %4.4fs, mse: %.8f " % (
+            epoch, ginit_epoch[3], n_iter, time.time() - step_time, errT))
+            total_texture_loss += errT
+            n_iter += 1
+        log = "[*] Epoch: [%2d/%2d] time: %4.4fs, mse: %.8f" % (
+        epoch, ginit_epoch[3], time.time() - epoch_time, total_texture_loss / n_iter)
+        print(log)
+
+        ## quick evaluation on train set
+        if (epoch != 0) and (epoch % 2 == 0):
+            out_original, diff_out, learned_out = sess.run([net_g_test.outputs, diff, net_texture_test.outputs],
+                                 {t_image: sample_imgs_start, t_target_image: sample_imgs_target})
+            print("[*] save images")
+            out_improved = out_original + learned_out
+            for img_idx in range(out_original.shape[0]):
+                tl.vis.save_image(out_original[img_idx], save_dir_model + '/train_{}_{}_original.png'.format(epoch,img_idx))
+                tl.vis.save_image(out_improved[img_idx], save_dir_model + '/train_{}_{}_improved.png'.format(epoch,img_idx))
+                tl.vis.save_image(diff_out[img_idx], save_dir_model + '/train_{}_{}_true_diff.png'.format(epoch,img_idx))
+                tl.vis.save_image(learned_out[img_idx], save_dir_model + '/train_{}_{}_learned_diff.png'.format(epoch,img_idx))
+
+
+        ## save model
+        if (epoch != 0) and (epoch % 10 == 0):
+            saver.save(sess, checkpoint_dir + '/texture.ckpt')
+
+
+if __name__ == '__main__':
+    print(args.dataset_path)
+    print(os.path.join(args.dataset_path, args.dataset, 'train_images_hr'))
+    train_hr_img_list = sorted(tl.files.load_file_list(path=os.path.join(args.dataset_path, args.dataset, 'samples_5000/'), regx='.*.jpg', printable=False))
+    train_hr_imgs = read_all_imgs(train_hr_img_list, path=os.path.join(args.dataset_path, args.dataset, 'samples_5000/'), n_threads=32)
     
-    if args.model == "MSSRGAN":
+    if "MSSRGAN" in args.model:
         for i in range(1,4):
-        train(i, train_hr_imgs)
+            if args.texture_only:
+                break
+            train(i, train_hr_imgs)
+        train_texture(train_hr_imgs)
     else:
         train(3, train_hr_imgs)
