@@ -45,7 +45,7 @@ def MS_texture(t_image, is_train=False, reuse=False):
             nn = ElementwiseLayer([n, nn], tf.add, name='res_add/res{}'.format(k))
             n = nn
 
-        n = Conv2d(n, 256, (3, 3), (1, 1), act=None, padding='SAME', W_init=w_init, b_init=b_init, name='post_conv')
+        n = Conv2d(n, 256, (3, 3), (1, 1), act=tf.nn.tanh, padding='SAME', W_init=w_init, b_init=b_init, name='post_conv')
         # B residual blacks end
 
 
@@ -172,6 +172,89 @@ def MSSRGAN_texture_g(t_image, is_train=False, reuse=False, pg=3):
 
             n = Conv2d(n, 3, (1, 1), (1, 1), act=tf.nn.tanh, padding='SAME', W_init=w_init, name='out/pg{}'.format(i))
         return n, features
+
+def MSSRGAN_texture_g_derivative(t_image, is_train=False, reuse=False, pg=3):
+    """ Generator in Photo-Realistic Single Image Super-Resolution Using a Generative Adversarial Network
+    feature maps (n) and stride (s) feature maps (n) and stride (s)
+    """
+    w_init = tf.random_normal_initializer(stddev=0.02)
+    b_init = None # tf.constant_initializer(value=0.0)
+    g_init = tf.random_normal_initializer(1., 0.02)
+    #texture_relu = lambda x: tf.add(tf.scalar_mul(.9, tf.nn.relu(x)), tf.scalar_mul(.1, tf.nn.sigmoid(x)))
+    sqrt_act = lambda x: tf.sqrt(tf.nn.relu(x)) 
+    #texture_relu = lambda x: tf.nn.sigmoid(x)
+
+    with tf.variable_scope("SRGAN_g", reuse=reuse) as vs:
+        n = InputLayer(t_image, name='in')        
+        #n = GaussianNoiseLayer(n, name="gaussian_noise_layer/pg{}".format(pg), stddev=.01, is_train=is_train)
+        concatInput = []
+
+        for i in range(1, pg + 1):
+            gs_input = tf.image.rgb_to_grayscale(n.outputs, name="input_to_grayscale/pg{}".format(i))
+            #input_derivative = tf.image.sobel_edges(gs_input)
+            input_derivative = tf.image.image_gradients(gs_input)
+            
+            input_derivative_1 = tf.reshape(input_derivative[0], [input_derivative[0].shape[0], input_derivative[0].shape[1], input_derivative[0].shape[2], -1])
+            input_derivative_2 = tf.reshape(input_derivative[1], [input_derivative[1].shape[0], input_derivative[1].shape[1], input_derivative[1].shape[2], -1])
+            n2 = InputLayer(input_derivative_1)
+            n3 = InputLayer(input_derivative_2)
+            n = ConcatLayer([n, n2, n3], concat_dim=3, name="concat_derivative/pg{}".format(i))
+ 
+            if i < pg: 
+                concatInput.append(n)
+
+            convConcatInput = []
+            for f in range(i-1):
+                convInput = concatInput[f]
+                convInput = DeConv2d(convInput, 2 ** (i + 4), (2 ** (i - f - 1), 2 ** (i - f - 1)), strides=(2 ** (i - f - 1), 2 ** (i - f - 1)), act=tf.nn.relu, padding='SAME', W_init=w_init, name='n12/pg{}/input_concat/stage{}'.format(i,f))
+                convConcatInput.append(convInput)
+
+            n_relu = Conv2d(n, 2 ** (i+5), (3, 3), (1,1), act=tf.nn.relu, padding='SAME', W_init=w_init, name='init_conv/relu_pg{}'.format(i)) 
+            n_sig = Conv2d(n, 2 ** (i+5), (3, 3), (1,1), act=tf.nn.sigmoid, padding='SAME', W_init=w_init, name='init_conv/sig_pg{}'.format(i))
+  
+            n = ConcatLayer([n_relu, n_sig], concat_dim=3, name='concat_act/pg{}'.format(i))
+
+            temp = n_relu
+            
+            if len(convConcatInput) > 0:
+                convConcatInput.append(n)
+                n = ConcatLayer(convConcatInput, concat_dim=3, name='concatInput/pg{}'.format(i))
+            
+            concatList = []
+            for j in range(1, i + 3):
+                nAC_relu = AtrousConv2dLayer(n, 8 * (i + 9), (3, 3), j, act=tf.nn.relu, padding='SAME', W_init=w_init, name='n8/pg{}/init/relu_ac{}'.format(i,j))
+                nAC_sig = AtrousConv2dLayer(n, 8 * (i + 9), (3, 3), j, act=tf.nn.sigmoid, padding='SAME', W_init=w_init, name='n8/pg{}/init/sig_ac{}'.format(i,j))
+                nAC = ConcatLayer([nAC_relu, nAC_sig], concat_dim=3, name='res_concat_act/init/pg{}'.format(i))
+                concatList.append(nAC)
+            n = ConcatLayer(concatList, concat_dim=3, name='res_cat/init/pg{}'.format(i))
+            n = Conv2d(n, 8 * (i + 9) * (i + 2), (3, 3), (1, 1), act=None, padding='SAME', W_init=w_init, b_init=b_init, name='res_dil_conv_mod/init/pg{}'.format(i))
+
+            # B residual blocks
+            for k in range(2 ** (5-i)):
+                concatList = []
+                for j in range(1, i + 3):
+                    nAC_relu = AtrousConv2dLayer(n, 8 * (i + 9), (3, 3), j, act=tf.nn.relu, padding='SAME', W_init=w_init, name='n8/pg{}/res{}/relu_ac{}'.format(i,k,j))
+                    nAC_sig = AtrousConv2dLayer(n, 8 * (i + 9), (3, 3), j, act=tf.nn.sigmoid, padding='SAME', W_init=w_init, name='n8/pg{}/res{}/sig_ac{}'.format(i,k,j))
+                    nAC = ConcatLayer([nAC_relu, nAC_sig], concat_dim=3, name='res_concat_act/res{}/pg{}'.format(k,i))
+                    concatList.append(nAC)
+                nn = ConcatLayer(concatList, concat_dim=3, name='res_cat/res{}/pg{}'.format(k,i))
+                nn = Conv2d(nn, 8 * (i + 9) * (i + 2), (3, 3), (1, 1), act=None, padding='SAME', W_init=w_init, b_init=b_init, name='res_dil_conv_mod/res{}/pg{}'.format(k,i))
+
+                nn = ElementwiseLayer([n, nn], tf.add, name='res_add/res{}/pg{}'.format(k,i))
+                n = nn
+
+            n = Conv2d(n, 2 ** (i+5), (3, 3), (1, 1), act=None, padding='SAME', W_init=w_init, b_init=b_init, name='post_conv/pg{}'.format(i))
+
+            n = ElementwiseLayer([n, temp], tf.add, name='add3/pg{}'.format(i))
+            # B residual blacks end
+
+            n = Conv2d(n, 2 ** (i + 6), (3, 3), (1, 1), act=None, padding='SAME', W_init=w_init, name='pre_up/pg{}'.format(i))
+            n = SubpixelConv2d(n, scale=2, n_out_channel=None, act=tf.nn.relu, name='pixelshufflerx2/pg{}'.format(i))
+
+            n = Conv2d(n, 3, (1, 1), (1, 1), act=tf.nn.tanh, padding='SAME', W_init=w_init, name='out/pg{}'.format(i))
+        return n, None
+
+
 
 
 def MSSRGAN_texture_g_2(t_image, is_train=False, reuse=False, pg=3):
