@@ -42,12 +42,12 @@ if args.dataset == "WV3":
 
 else:
     target_size = [16, 32, 64, 128]
-    ginit_epoch = [20, 40, 40, 40]
-    gans_epoch = [150, -1, -1, 70]
+    ginit_epoch = [5, 5, 5, 5]
+    gans_epoch = [150, 10, 10, 15]
     loss_parameters = []
 
 if args.model == "MSSR":
-    ginit_epoch = [0, 0, 0, 350]
+    init_epoch = [0, 0, 0, 350]
 
 random.seed(3)
 
@@ -83,6 +83,11 @@ def train(pg, train_hr_imgs):
          net_d, _, logits_real = MSSRGAN_d(t_target_image, is_train=True, reuse=tf.AUTO_REUSE, pg=pg)
          _,     _, logits_fake = MSSRGAN_d(net_g.outputs, is_train=True, reuse=tf.AUTO_REUSE, pg=pg)
 
+    elif args.model == "MSSRGAN_concat":
+        net_g, _ = MSSRGAN_texture_concat_noise(t_image, is_train=True, reuse=tf.AUTO_REUSE, pg=pg)
+        net_d, _, logits_real = MSSRGAN_d(t_target_image, is_train=True, reuse=tf.AUTO_REUSE, pg=pg)
+        _, _, logits_fake = MSSRGAN_d(net_g.outputs, is_train=True, reuse=tf.AUTO_REUSE, pg=pg)
+
     elif args.model == "MSSRGAN_texture":
         net_g, _ = MSSRGAN_texture_g_2(t_image, is_train=True, reuse=tf.AUTO_REUSE, pg=pg)
         net_d, _, logits_real = MSSRGAN_d(t_target_image, is_train=True, reuse=tf.AUTO_REUSE, pg=pg)
@@ -92,6 +97,13 @@ def train(pg, train_hr_imgs):
         net_g, _ = MSSRGAN_texture_g_derivative(t_image, is_train=True, reuse=tf.AUTO_REUSE, pg=pg)
         net_d, _, logits_real = MSSRGAN_d(t_target_image, is_train=True, reuse=tf.AUTO_REUSE, pg=pg)
         _, _, logits_fake = MSSRGAN_d(net_g.outputs, is_train=True, reuse=tf.AUTO_REUSE, pg=pg)
+
+    elif args.model == "MSSRGAN_conditional":
+        net_g, _ = MSSRGAN_texture_g_2(t_image, is_train=True, reuse=tf.AUTO_REUSE, pg=pg)
+        gen_image = tf.concat([net_g.outputs, tf.image.resize_images(t_image, [target_size[pg], target_size[pg]])], axis=3)
+        target_image = tf.concat([t_target_image, tf.image.resize_images(t_image, [target_size[pg], target_size[pg]])], axis=3)
+        net_d, _, logits_real = MSSRGAN_d(target_image, is_train=True, reuse=tf.AUTO_REUSE, pg=pg)
+        _, _, logits_fake = MSSRGAN_d(gen_image, is_train=True, reuse=tf.AUTO_REUSE, pg=pg)
 
     elif args.model == "SRGAN":
          net_g = SRGAN_g(t_image, is_train=True)
@@ -115,11 +127,17 @@ def train(pg, train_hr_imgs):
     if args.model == "MSSRGAN":
          net_g_test = MSSRGAN_g(t_image, is_train=False, reuse=tf.AUTO_REUSE, pg=pg)
 
+    if args.model == "MSSRGAN_concat":
+       net_g_test, _ = MSSRGAN_texture_concat_noise(t_image, is_train=False, reuse=tf.AUTO_REUSE, pg=pg)
+
     elif args.model == "MSSRGAN_texture":
         net_g_test, _ = MSSRGAN_texture_g_2(t_image, is_train=False, reuse=tf.AUTO_REUSE, pg=pg)
  
     elif args.model == "MSSRGAN_derivative":
         net_g_test, _ = MSSRGAN_texture_g_derivative(t_image, is_train=False, reuse=tf.AUTO_REUSE, pg=pg)
+
+    elif args.model == "MSSRGAN_conditional":
+        net_g_test, _ = MSSRGAN_texture_g_2(t_image, is_train=False, reuse=tf.AUTO_REUSE, pg=pg)
 
     elif args.model == "SRGAN":
          net_g_test = SRGAN_g(t_image, is_train=False, reuse=tf.AUTO_REUSE)
@@ -144,6 +162,8 @@ def train(pg, train_hr_imgs):
 
     if args.model != "MSSR":
         g_loss = mse_loss
+    elif pg < 3:
+        g_loss = mse_loss + g_gan_loss
     else:
         g_loss = vgg_loss + mse_loss + g_gan_loss
 
@@ -180,8 +200,10 @@ def train(pg, train_hr_imgs):
         d_optim = tf.train.AdamOptimizer(lr_v, beta1=beta1).minimize(d_loss, var_list=d_vars)
 
     elif "MSSRGAN" in args.model:
-        g_optim = tf.train.RMSPropOptimizer(1e-5,name='RMS_g_{}'.format(pg)).minimize(g_loss, var_list=g_new_vars, name='min_g_{}'.format(pg))
-        d_optim = tf.train.RMSPropOptimizer(1e-5,name='RMS_d_{}'.format(pg)).minimize(d_loss, var_list=d_vars, name='min_d_{}'.format(pg))
+        #g_optim = tf.train.RMSPropOptimizer(1e-4,name='RMS_g_{}'.format(pg)).minimize(g_loss, var_list=g_new_vars, name='min_g_{}'.format(pg))
+        #d_optim = tf.train.RMSPropOptimizer(1e-4,name='RMS_d_{}'.format(pg)).minimize(d_loss, var_list=d_vars, name='min_d_{}'.format(pg))
+        g_optim = tf.train.AdamOptimizer(1e-4, beta1=beta1, name='Adam_g_{}'.format(pg)).minimize(g_loss, var_list=g_new_vars, name='min_g_{}'.format(pg))
+        d_optim = tf.train.AdamOptimizer(1e-4, beta1=beta1, name='Adam_d_{}'.format(pg)).minimize(d_loss, var_list=d_vars, name='min_d_{}'.format(pg))
         clip_op = [tf.assign(var, tf.clip_by_value(var, -0.01, 0.01)) for var in d_vars]
 
     ###========================== RESTORE MODEL =============================###
@@ -316,7 +338,7 @@ def train(pg, train_hr_imgs):
 
 def train_texture(train_hr_imgs):
     ## create folders to save result images and trained model
-    save_dir_model = os.path.join(args.dataset_path, "train_texture_no_threshold_{}_{}".format(args.dataset,args.checkpoint))
+    save_dir_model = os.path.join(args.dataset_path, "train_texture_normalized_penalized_{}_{}".format(args.dataset,args.checkpoint))
     tl.files.exists_or_mkdir(save_dir_model)
     checkpoint_dir = os.path.join(args.dataset_path, "checkpoint_{}_{}".format(args.dataset,args.checkpoint))
     tl.files.exists_or_mkdir(checkpoint_dir)
@@ -340,9 +362,186 @@ def train_texture(train_hr_imgs):
         net_g, _ = MSSRGAN_texture_g_derivative(t_image, is_train=False, reuse=tf.AUTO_REUSE, pg=3)
         net_texture = MS_texture(net_g.outputs, is_train=True, reuse=tf.AUTO_REUSE)
 
+    elif args.model == "MSSRGAN_conditional":
+        net_g, _ = MSSRGAN_texture_g_2(t_image, is_train=False, reuse=tf.AUTO_REUSE, pg=3)
+        net_texture = MS_texture(net_g.outputs, is_train=True, reuse=tf.AUTO_REUSE)
+
     ## test inference
-        net_g_test, _ = MSSRGAN_texture_g_derivative(t_image, is_train=False, reuse=tf.AUTO_REUSE, pg=3)
+        net_g_test, _ = MSSRGAN_texture_g_2(t_image, is_train=False, reuse=tf.AUTO_REUSE, pg=3)
         net_texture_test = MS_texture(net_g_test.outputs, is_train=False, reuse=tf.AUTO_REUSE)
+    
+    else:
+        net_g, _ = MSSRGAN_texture_concat_noise(t_image, is_train=False, reuse=tf.AUTO_REUSE, pg=3)
+        net_texture = MS_texture(net_g.outputs, is_train=True, reuse=tf.AUTO_REUSE)
+
+    ## test inference
+        net_g_test, _ = MSSRGAN_texture_concat_noise(t_image, is_train=False, reuse=tf.AUTO_REUSE, pg=3)
+        net_texture_test = MS_texture(net_g_test.outputs, is_train=False, reuse=tf.AUTO_REUSE)
+   
+     
+    ####========================== DEFINE TRAIN OPS ==========================###i
+    #train_output = (net_texture.outputs - tf.reduce_min(net_texture.outputs))/(tf.reduce_max(net_texture.outputs) - tf.reduce_min(net_texture.outputs)) * 2 - 1
+    train_output = net_texture.outputs
+    diff = t_target_image - net_g.outputs
+    diff_positive = tf.keras.activations.relu(diff, threshold=.02)
+    diff_negative = tf.multiply(tf.keras.activations.relu(tf.multiply(diff, -1.), threshold=.02), -1.)
+
+    diff = tf.add(diff_negative, diff_positive)
+    #mse_mask = tf.add(tf.multiply(tf.cast(tf.equal(diff, 0.), tf.float32), 4.), 1.)
+    diff_scaled = tf.divide(diff, 2.)
+    rescaled_output = tf.multiply(train_output, 2.)
+    #penalized_output = tf.multiply(mse_mask, train_output)
+    texture_loss = tf.losses.mean_squared_error(train_output, diff_scaled)
+    
+    diff_grad = tf.image.image_gradients(tf.image.rgb_to_grayscale(diff))
+    diff_grad_2_x = tf.image.image_gradients(diff_grad[0])
+    diff_grad_2_y = tf.image.image_gradients(diff_grad[1])
+    diff_grad = tf.stack([diff_grad[0], diff_grad[1]], axis = 3)
+    output_grad = tf.image.image_gradients(tf.image.rgb_to_grayscale(train_output))
+    output_grad_2_x = tf.image.image_gradients(output_grad[0])
+    output_grad_2_y = tf.image.image_gradients(output_grad[1])
+    output_grad = tf.stack([output_grad[0], output_grad[1]], axis = 3)
+
+    diff_grad_2 = tf.stack([diff_grad_2_x[0], diff_grad_2_y[1], diff_grad_2_x[0], diff_grad_2_y[1]], axis = 3)
+    output_grad_2 = tf.stack([output_grad_2_x[0], output_grad_2_y[1], output_grad_2_x[0], output_grad_2_y[1]], axis = 3)
+    
+    gradient_loss = tf.losses.mean_squared_error(output_grad, diff_grad)
+    gradient_2_loss = tf.losses.mean_squared_error(output_grad_2, diff_grad_2)
+ 
+    total_loss = texture_loss + .25*gradient_loss + .125*gradient_2_loss
+
+    g_vars = tl.layers.get_variables_with_name('SRGAN_g', True, True)
+    texture_vars = tl.layers.get_variables_with_name('texture', True, True)
+
+    g_old_vars = []
+    for i in range(1, 4):
+        old_vars = [var for var in g_vars if 'pg{}'.format(i) in var.name]
+        g_old_vars = g_old_vars + old_vars
+
+    init_restorer = tf.train.Saver(g_old_vars)
+
+    saver = tf.train.Saver(texture_vars)
+
+    with tf.variable_scope('learning_rate'):
+        lr_v = tf.Variable(lr_init, trainable=False)
+
+    texture_optim = tf.train.AdamOptimizer(lr_v, beta1=beta1, name='texture_optimizer').minimize(total_loss,
+                                                                                                var_list=texture_vars,
+                                                                                                name='min_texture')
+    ###========================== RESTORE MODEL =============================### 
+    config = tf.ConfigProto(allow_soft_placement=True, log_device_placement=False)
+    config.gpu_options.allow_growth=True
+    sess = tf.Session(config=config)
+    tl.layers.initialize_global_variables(sess)
+
+    init_restorer.restore(sess, checkpoint_dir + '/gan.ckpt')
+
+    ###============================= TRAINING ===============================###
+    ## use first `batch_size` of train set to have a quick test during training
+
+    train_hr_imgs = tl.prepro.threading_data(train_hr_imgs, fn=crop_sub_imgs_fn, size=target_size[3])
+    sample_imgs_target = train_hr_imgs[1000: 1000 + batch_size]
+    sample_imgs_start = tl.prepro.threading_data(train_hr_imgs[1000: 1000 + batch_size], fn=downsample_fn, size=target_size[0],
+                                                 target_size=target_size[3])
+
+    for img_idx in range(sample_imgs_start.shape[0]):
+        tl.vis.save_image(sample_imgs_start[img_idx], save_dir_model + '/_train_sample_{}_{}.png'.format(target_size[0],img_idx))
+        tl.vis.save_image(sample_imgs_target[img_idx], save_dir_model + '/_train_sample_{}_{}.png'.format(target_size[3],img_idx))
+
+    print('done saving samples')
+
+    ###========================= initialize G ====================###
+    ## fixed learning rate
+    sess.run(tf.assign(lr_v, lr_init))
+    print(" ** fixed learning rate: %f (for init G)" % lr_init)
+
+    #for epoch in range(0, ginit_epoch[3] + 1):
+    for epoch in range(0, 101):
+        epoch_time = time.time()
+        total_texture_loss, n_iter = 0, 0
+
+        for idx in range(0, len(train_hr_imgs), batch_size):
+            step_time = time.time()
+            b_imgs_target = train_hr_imgs[idx: idx + batch_size]
+            b_imgs_start = tl.prepro.threading_data(train_hr_imgs[idx: idx + batch_size], fn=downsample_fn,
+                                                    size=target_size[0], target_size=target_size[3])
+            ## update G
+            original_train, diff_train, learned_train, errT, errG, _ = sess.run([net_g.outputs, diff_scaled, train_output, texture_loss, gradient_loss, texture_optim], {t_image: b_imgs_start, t_target_image: b_imgs_target})
+            print("diff min:", np.amin(diff_train), "diff_max:", np.amax(diff_train))
+            print("diff mean:", np.mean(diff_train), "diff_std:", np.std(diff_train))
+            print("output min:", np.amin(learned_train), "output max:", np.amax(learned_train))
+            print("output mean:", np.mean(learned_train), "output_std", np.std(learned_train))
+            print("image min:", np.amin(original_train), "image min:", np.amax(original_train))
+            print("image mean:", np.mean(original_train), "image std:", np.std(original_train))
+            print("Epoch [%2d/%2d] %4d time: %4.4fs, mse: %.8f " % (
+            epoch, 100, n_iter, time.time() - step_time, errT))
+            total_texture_loss += errT
+            n_iter += 1
+        log = "[*] Epoch: [%2d/%2d] time: %4.4fs, mse: %.8f" % (
+        epoch, 100, time.time() - epoch_time, total_texture_loss / n_iter)
+        print(log)
+
+        ## quick evaluation on train set
+        if (epoch != 0) and (epoch % 2 == 0):
+            out_original, diff_out, learned_out = sess.run([net_g_test.outputs, diff, rescaled_output],
+                                 {t_image: sample_imgs_start, t_target_image: sample_imgs_target})
+            print("[*] save images")
+            #learned_out = (learned_out - np.amin(learned_out))/(np.amax(learned_out) - np.amin(learned_out)) * 2 - 1
+            out_improved = out_original + learned_out
+            for img_idx in range(out_original.shape[0]):
+                tl.vis.save_image(out_original[img_idx], save_dir_model + '/train_{}_{}_original.png'.format(epoch,img_idx))
+                tl.vis.save_image(out_improved[img_idx], save_dir_model + '/train_{}_{}_improved.png'.format(epoch,img_idx))
+                tl.vis.save_image(diff_out[img_idx], save_dir_model + '/train_{}_{}_true_diff.png'.format(epoch,img_idx))
+                tl.vis.save_image(learned_out[img_idx], save_dir_model + '/train_{}_{}_learned_diff.png'.format(epoch,img_idx))
+
+
+        ## save model
+        if (epoch != 0) and (epoch % 10 == 0):
+            
+            saver.save(sess, checkpoint_dir + '/texture.ckpt')
+
+def train_texture_negative(train_hr_imgs):
+    ## create folders to save result images and trained model
+    save_dir_model = os.path.join(args.dataset_path, "train_texture_negative_normalized_{}_{}".format(args.dataset,args.checkpoint))
+    tl.files.exists_or_mkdir(save_dir_model)
+    checkpoint_dir = os.path.join(args.dataset_path, "checkpoint_{}_{}".format(args.dataset,args.checkpoint))
+    tl.files.exists_or_mkdir(checkpoint_dir)
+
+
+    ###========================== DEFINE MODEL ============================###
+    ## train inference
+    t_image = tf.placeholder('float32', [batch_size, target_size[0], target_size[0], 3],
+                             name='t_image_input_to_generator')
+    t_target_image = tf.placeholder('float32', [batch_size, target_size[3], target_size[3], 3], name='t_target_image')
+
+    if args.model == "MSSRGAN_texture":
+        net_g, _ = MSSRGAN_texture_g_2(t_image, is_train=False, reuse=tf.AUTO_REUSE, pg=3)
+        net_texture = MS_texture(net_g.outputs, is_train=True, reuse=tf.AUTO_REUSE)
+
+    ## test inference
+        net_g_test, _ = MSSRGAN_texture_g_2(t_image, is_train=False, reuse=tf.AUTO_REUSE, pg=3)
+        net_texture_test = MS_texture(net_g_test.outputs, is_train=False, reuse=tf.AUTO_REUSE)
+
+    elif args.model == "MSSRGAN_derivative":
+        net_g, _ = MSSRGAN_texture_g_derivative(t_image, is_train=False, reuse=tf.AUTO_REUSE, pg=3)
+        net_texture = MS_texture(net_g.outputs, is_train=True, reuse=tf.AUTO_REUSE)
+
+    elif args.model == "MSSRGAN_conditional":
+        net_g, _ = MSSRGAN_texture_g_2(t_image, is_train=False, reuse=tf.AUTO_REUSE, pg=3)
+        net_texture = MS_texture(net_g.outputs, is_train=True, reuse=tf.AUTO_REUSE)
+
+    ## test inference
+        net_g_test, _ = MSSRGAN_texture_g_2(t_image, is_train=False, reuse=tf.AUTO_REUSE, pg=3)
+        net_texture_test = MS_texture(net_g_test.outputs, is_train=False, reuse=tf.AUTO_REUSE)
+    
+    else:
+        net_g, _ = MSSRGAN_texture_concat_noise(t_image, is_train=False, reuse=tf.AUTO_REUSE, pg=3)
+        net_texture = MS_texture(tf.negative(net_g.outputs), is_train=True, reuse=tf.AUTO_REUSE)
+
+    ## test inference
+        net_g_test, _ = MSSRGAN_texture_concat_noise(t_image, is_train=False, reuse=tf.AUTO_REUSE, pg=3)
+        net_texture_test = MS_texture(tf.negative(net_g_test.outputs), is_train=False, reuse=tf.AUTO_REUSE)
+   
      
     ####========================== DEFINE TRAIN OPS ==========================###i
     #train_output = (net_texture.outputs - tf.reduce_min(net_texture.outputs))/(tf.reduce_max(net_texture.outputs) - tf.reduce_min(net_texture.outputs)) * 2 - 1
@@ -353,16 +552,27 @@ def train_texture(train_hr_imgs):
 
     diff = tf.add(diff_negative, diff_positive)
     mse_mask = tf.add(tf.multiply(tf.cast(tf.equal(diff, 0.), tf.float32), 2), 1)
-    penalized_output = tf.multiply(mse_mask, train_output)
-    texture_loss = tf.losses.mean_squared_error(penalized_output, diff)
-    
+    #penalized_output = tf.multiply(mse_mask, train_output)
+    diff_scaled = tf.divide(diff, 2.)
+    rescaled_output = tf.multiply(train_output, 2.)
+    texture_loss = tf.losses.mean_squared_error(train_output, diff_scaled)
+ 
     diff_grad = tf.image.image_gradients(tf.image.rgb_to_grayscale(diff))
+    diff_grad_2_x = tf.image.image_gradients(diff_grad[0])
+    diff_grad_2_y = tf.image.image_gradients(diff_grad[1])
     diff_grad = tf.stack([diff_grad[0], diff_grad[1]], axis = 3)
     output_grad = tf.image.image_gradients(tf.image.rgb_to_grayscale(train_output))
+    output_grad_2_x = tf.image.image_gradients(output_grad[0])
+    output_grad_2_y = tf.image.image_gradients(output_grad[1])
     output_grad = tf.stack([output_grad[0], output_grad[1]], axis = 3)
+
+    diff_grad_2 = tf.stack([diff_grad_2_x[0], diff_grad_2_y[1], diff_grad_2_x[0], diff_grad_2_y[1]], axis = 3)
+    output_grad_2 = tf.stack([output_grad_2_x[0], output_grad_2_y[1], output_grad_2_x[0], output_grad_2_y[1]], axis = 3)
+    
     gradient_loss = tf.losses.mean_squared_error(output_grad, diff_grad)
+    gradient_2_loss = tf.losses.mean_squared_error(output_grad_2, diff_grad_2)
  
-    total_loss = texture_loss #+ gradient_loss
+    total_loss = texture_loss + 0.25*gradient_loss + 0.125*gradient_2_loss
 
     g_vars = tl.layers.get_variables_with_name('SRGAN_g', True, True)
     texture_vars = tl.layers.get_variables_with_name('texture', True, True)
@@ -395,8 +605,7 @@ def train_texture(train_hr_imgs):
 
     train_hr_imgs = tl.prepro.threading_data(train_hr_imgs, fn=crop_sub_imgs_fn, size=target_size[3])
     sample_imgs_target = train_hr_imgs[1000: 1000 + batch_size]
-    sample_imgs_start = tl.prepro.threading_data(train_hr_imgs[1000: 1000 + batch_size], fn=downsample_fn, size=target_size[0],
-                                                 target_size=target_size[3])
+    sample_imgs_start = tl.prepro.threading_data(train_hr_imgs[1000: 1000 + batch_size], fn=downsample_fn, size=target_size[0], target_size=target_size[3])
 
     for img_idx in range(sample_imgs_start.shape[0]):
         tl.vis.save_image(sample_imgs_start[img_idx], save_dir_model + '/_train_sample_{}_{}.png'.format(target_size[0],img_idx))
@@ -410,7 +619,7 @@ def train_texture(train_hr_imgs):
     print(" ** fixed learning rate: %f (for init G)" % lr_init)
 
     #for epoch in range(0, ginit_epoch[3] + 1):
-    for epoch in range(0, 41):
+    for epoch in range(0, 101):
         epoch_time = time.time()
         total_texture_loss, n_iter = 0, 0
 
@@ -420,28 +629,31 @@ def train_texture(train_hr_imgs):
             b_imgs_start = tl.prepro.threading_data(train_hr_imgs[idx: idx + batch_size], fn=downsample_fn,
                                                     size=target_size[0], target_size=target_size[3])
             ## update G
-            original_train, diff_train, learned_train, errT, errG, _ = sess.run([train_output, diff, net_texture.outputs, texture_loss, gradient_loss, texture_optim], {t_image: b_imgs_start, t_target_image: b_imgs_target})
+            original_train, diff_train, learned_train, errT, errG, _ = sess.run([train_output, diff_scaled, net_texture.outputs, texture_loss, gradient_loss, texture_optim], {t_image: b_imgs_start, t_target_image: b_imgs_target})
             #learned_train = (learned_train - np.amin(learned_train))/(np.amax(learned_train) - np.min(learned_train)) * 2 - 1
-            print(np.amin(diff_train), np.amax(diff_train))
-            print(np.amin(learned_train), np.amax(learned_train))
-            print(np.amin(original_train), np.amax(original_train))
+            print("diff min:", np.amin(diff_train), "diff_max:", np.amax(diff_train))
+            print("diff mean:", np.mean(diff_train), "diff_std:", np.std(diff_train))
+            print("output min:", np.amin(learned_train), "output max:", np.amax(learned_train))
+            print("output mean:", np.mean(learned_train), "output_std", np.std(learned_train))
+            print("image min:", np.amin(original_train), "image min:", np.amax(original_train))
+            print("image mean:", np.mean(original_train), "image std:", np.std(original_train))
             print("Epoch [%2d/%2d] %4d time: %4.4fs, mse: %.8f " % (
-            epoch, ginit_epoch[3], n_iter, time.time() - step_time, errT))
+            epoch, 100, n_iter, time.time() - step_time, errT))
             total_texture_loss += errT
             n_iter += 1
         log = "[*] Epoch: [%2d/%2d] time: %4.4fs, mse: %.8f" % (
-        epoch, ginit_epoch[3], time.time() - epoch_time, total_texture_loss / n_iter)
+        epoch, 100, time.time() - epoch_time, total_texture_loss / n_iter)
         print(log)
 
         ## quick evaluation on train set
         if (epoch != 0) and (epoch % 2 == 0):
-            out_original, diff_out, learned_out = sess.run([net_g_test.outputs, diff, net_texture_test.outputs],
+            out_original, diff_out, learned_out = sess.run([net_g_test.outputs, diff, rescaled_output],
                                  {t_image: sample_imgs_start, t_target_image: sample_imgs_target})
             print("[*] save images")
             #learned_out = (learned_out - np.amin(learned_out))/(np.amax(learned_out) - np.amin(learned_out)) * 2 - 1
             out_improved = out_original + learned_out
             for img_idx in range(out_original.shape[0]):
-                tl.vis.save_image(out_original[img_idx], save_dir_model + '/train_{}_{}_original.png'.format(epoch,img_idx))
+                tl.vis.save_image(np.negative(out_original[img_idx]), save_dir_model + '/train_{}_{}_input.png'.format(epoch,img_idx))
                 tl.vis.save_image(out_improved[img_idx], save_dir_model + '/train_{}_{}_improved.png'.format(epoch,img_idx))
                 tl.vis.save_image(diff_out[img_idx], save_dir_model + '/train_{}_{}_true_diff.png'.format(epoch,img_idx))
                 tl.vis.save_image(learned_out[img_idx], save_dir_model + '/train_{}_{}_learned_diff.png'.format(epoch,img_idx))
@@ -450,6 +662,187 @@ def train_texture(train_hr_imgs):
         ## save model
         if (epoch != 0) and (epoch % 10 == 0):
             saver.save(sess, checkpoint_dir + '/texture.ckpt')
+
+def train_texture_projection(train_hr_imgs):
+    ## create folders to save result images and trained model
+    save_dir_model = os.path.join(args.dataset_path, "train_texture_projection_low_lr_{}_{}".format(args.dataset,args.checkpoint))
+    tl.files.exists_or_mkdir(save_dir_model)
+    checkpoint_dir = os.path.join(args.dataset_path, "checkpoint_{}_{}".format(args.dataset,args.checkpoint))
+    tl.files.exists_or_mkdir(checkpoint_dir)
+
+
+    ###========================== DEFINE MODEL ============================###
+    ## train inference
+    t_image = tf.placeholder('float32', [batch_size, target_size[0], target_size[0], 3],
+                             name='t_image_input_to_generator')
+    t_target_image = tf.placeholder('float32', [batch_size, target_size[3], target_size[3], 3], name='t_target_image')
+
+    if args.model == "MSSRGAN_texture":
+        net_g, _ = MSSRGAN_texture_g_2(t_image, is_train=False, reuse=tf.AUTO_REUSE, pg=3)
+        net_texture = MS_texture(net_g.outputs, is_train=True, reuse=tf.AUTO_REUSE)
+
+    ## test inference
+        net_g_test, _ = MSSRGAN_texture_g_2(t_image, is_train=False, reuse=tf.AUTO_REUSE, pg=3)
+        net_texture_test = MS_texture(net_g_test.outputs, is_train=False, reuse=tf.AUTO_REUSE)
+
+    elif args.model == "MSSRGAN_derivative":
+        net_g, _ = MSSRGAN_texture_g_derivative(t_image, is_train=False, reuse=tf.AUTO_REUSE, pg=3)
+        net_texture = MS_texture(net_g.outputs, is_train=True, reuse=tf.AUTO_REUSE)
+
+    elif args.model == "MSSRGAN_conditional":
+        net_g, _ = MSSRGAN_texture_g_2(t_image, is_train=False, reuse=tf.AUTO_REUSE, pg=3)
+        net_texture = MS_texture(net_g.outputs, is_train=True, reuse=tf.AUTO_REUSE)
+
+    ## test inference
+        net_g_test, _ = MSSRGAN_texture_g_2(t_image, is_train=False, reuse=tf.AUTO_REUSE, pg=3)
+        net_texture_test = MS_texture(net_g_test.outputs, is_train=False, reuse=tf.AUTO_REUSE)
+    
+    else:
+        net_g, _ = MSSRGAN_texture_concat_noise(t_image, is_train=False, reuse=tf.AUTO_REUSE, pg=3)
+        net_texture = MS_texture(net_g.outputs, is_train=True, reuse=tf.AUTO_REUSE)
+
+    ## test inference
+        net_g_test, _ = MSSRGAN_texture_concat_noise(t_image, is_train=False, reuse=tf.AUTO_REUSE, pg=3)
+        net_texture_test = MS_texture(net_g_test.outputs, is_train=False, reuse=tf.AUTO_REUSE)
+   
+     
+    ####========================== DEFINE TRAIN OPS ==========================###i
+    #train_output = (net_texture.outputs - tf.reduce_min(net_texture.outputs))/(tf.reduce_max(net_texture.outputs) - tf.reduce_min(net_texture.outputs)) * 2 - 1
+    train_output = net_texture.outputs
+    diff = t_target_image - net_g.outputs
+    diff_positive = tf.keras.activations.relu(diff, threshold=.02)
+    diff_negative = tf.multiply(tf.keras.activations.relu(tf.multiply(diff, -1), threshold=.02), -1)
+
+    diff = tf.add(diff_negative, diff_positive)
+    mse_mask = tf.add(tf.multiply(tf.cast(tf.equal(diff, 0.), tf.float32), 4.), 1.)
+    np_random = np.random.uniform(10, 100, (diff.shape[1], diff.shape[2], diff.shape[3]))
+    np_random = np.stack([np_random, np_random, np_random, np_random], axis=0)
+    random_filter = tf.constant(np_random, dtype=tf.float32)
+    diff_project = tf.multiply(tf.spectral.dct(tf.add(diff,.3)), random_filter)
+    #diff_project = tf.multiply(tf.spectral.dct(tf.sqrt(tf.add(diff, 2))), random_filter)
+    #diff_dct = diff_project
+    diff_project = tf.spectral.dct(diff_project, type=3)
+    intermediate_project = diff_project
+    diff_reconstruct = tf.divide(tf.spectral.dct(diff_project), random_filter)
+    diff_reconstruct = tf.subtract(tf.spectral.dct(diff_reconstruct, type = 3), .3) 
+
+    mse_mask = tf.add(tf.multiply(tf.cast(tf.equal(diff, 0.), tf.float32), 2), 1)
+    penalized_output = tf.multiply(mse_mask, train_output)
+    texture_loss = tf.losses.mean_squared_error(train_output, diff_project)
+    
+    intermediate_output = train_output
+    output_project = tf.divide(tf.spectral.dct(train_output), random_filter)
+    output_project = tf.subtract(tf.spectral.dct(output_project, type = 3), .3)
+    #output_project = tf.subtract(tf.square(tf.spectral.dct(output_project, type = 3)), 2)
+
+    diff_grad = tf.image.image_gradients(tf.image.rgb_to_grayscale(diff_project))
+    diff_grad_2_x = tf.image.image_gradients(diff_grad[0])
+    diff_grad_2_y = tf.image.image_gradients(diff_grad[1])
+    diff_grad = tf.stack([diff_grad[0], diff_grad[1]], axis = 3)
+    output_grad = tf.image.image_gradients(tf.image.rgb_to_grayscale(train_output))
+    output_grad_2_x = tf.image.image_gradients(output_grad[0])
+    output_grad_2_y = tf.image.image_gradients(output_grad[1])
+    output_grad = tf.stack([output_grad[0], output_grad[1]], axis = 3)
+
+    diff_grad_2 = tf.stack([diff_grad_2_x[0], diff_grad_2_y[1], diff_grad_2_x[0], diff_grad_2_y[1]], axis = 3)
+    output_grad_2 = tf.stack([output_grad_2_x[0], output_grad_2_y[1], output_grad_2_x[0], output_grad_2_y[1]], axis = 3)
+    
+    gradient_loss = tf.losses.mean_squared_error(output_grad, diff_grad)
+    gradient_2_loss = tf.losses.mean_squared_error(output_grad_2, diff_grad_2)
+ 
+    total_loss = texture_loss + 0.5*gradient_loss + 0.25*gradient_2_loss
+
+    g_vars = tl.layers.get_variables_with_name('SRGAN_g', True, True)
+    texture_vars = tl.layers.get_variables_with_name('texture', True, True)
+
+    g_old_vars = []
+    for i in range(1, 4):
+        old_vars = [var for var in g_vars if 'pg{}'.format(i) in var.name]
+        g_old_vars = g_old_vars + old_vars
+
+    init_restorer = tf.train.Saver(g_old_vars)
+
+    saver = tf.train.Saver(texture_vars)
+
+    with tf.variable_scope('learning_rate'):
+        lr_v = tf.Variable(lr_init, trainable=False)
+
+    texture_optim = tf.train.AdamOptimizer(0.000005, beta1=beta1, name='texture_optimizer').minimize(total_loss,
+                                                                                                var_list=texture_vars,
+                                                                                                name='min_texture')
+    ###========================== RESTORE MODEL =============================### 
+    config = tf.ConfigProto(allow_soft_placement=True, log_device_placement=False)
+    config.gpu_options.allow_growth=True
+    sess = tf.Session(config=config)
+    tl.layers.initialize_global_variables(sess)
+
+    init_restorer.restore(sess, checkpoint_dir + '/gan.ckpt')
+
+    ###============================= TRAINING ===============================###
+    ## use first `batch_size` of train set to have a quick test during training
+
+    train_hr_imgs = tl.prepro.threading_data(train_hr_imgs, fn=crop_sub_imgs_fn, size=target_size[3])
+    sample_imgs_target = train_hr_imgs[1000: 1000 + batch_size]
+    sample_imgs_start = tl.prepro.threading_data(train_hr_imgs[1000: 1000 + batch_size], fn=downsample_fn, size=target_size[0], target_size=target_size[3])
+
+    for img_idx in range(sample_imgs_start.shape[0]):
+        tl.vis.save_image(sample_imgs_start[img_idx], save_dir_model + '/_train_sample_{}_{}.png'.format(target_size[0],img_idx))
+        tl.vis.save_image(sample_imgs_target[img_idx], save_dir_model + '/_train_sample_{}_{}.png'.format(target_size[3],img_idx))
+
+    print('done saving samples')
+
+    ###========================= initialize G ====================###
+    ## fixed learning rate
+    sess.run(tf.assign(lr_v, lr_init))
+    print(" ** fixed learning rate: %f (for init G)" % lr_init)
+
+    #for epoch in range(0, ginit_epoch[3] + 1):
+    for epoch in range(0, 101):
+        epoch_time = time.time()
+        total_texture_loss, n_iter = 0, 0
+
+        for idx in range(0, len(train_hr_imgs), batch_size):
+            step_time = time.time()
+            b_imgs_target = train_hr_imgs[idx: idx + batch_size]
+            b_imgs_start = tl.prepro.threading_data(train_hr_imgs[idx: idx + batch_size], fn=downsample_fn,
+                                                    size=target_size[0], target_size=target_size[3])
+            ## update G
+            original_train, diff_train, learned_train, errT, errG, _ = sess.run([net_g.outputs, diff_project, train_output, texture_loss, gradient_loss, texture_optim], {t_image: b_imgs_start, t_target_image: b_imgs_target})
+            #learned_train = (learned_train - np.amin(learned_train))/(np.amax(learned_train) - np.min(learned_train)) * 2 - 1
+            print("diff min:", np.amin(diff_train), "diff_max:", np.amax(diff_train))
+            print("diff mean:", np.mean(diff_train), "diff_std:", np.std(diff_train))
+            print("output min:", np.amin(learned_train), "output max:", np.amax(learned_train))
+            print("output mean:", np.mean(learned_train), "output_std", np.std(learned_train))
+            print("image min:", np.amin(original_train), "image min:", np.amax(original_train))
+            print("image mean:", np.mean(original_train), "image std:", np.std(original_train))
+            print("Epoch [%2d/%2d] %4d time: %4.4fs, mse: %.8f " % (
+            epoch, 100, n_iter, time.time() - step_time, errT))
+            total_texture_loss += errT
+            n_iter += 1
+        log = "[*] Epoch: [%2d/%2d] time: %4.4fs, mse: %.8f" % (epoch, 100, time.time() - epoch_time, total_texture_loss / n_iter)
+        print(log)
+
+        ## quick evaluation on train set
+        if (epoch != 0) and (epoch % 2 == 0):
+            out_original, diff_out, learned_out, r_filter, diff_intermediate, out_intermediate, diff_re = sess.run([net_g_test.outputs, diff, output_project, random_filter, intermediate_project, intermediate_output, diff_reconstruct], {t_image: sample_imgs_start, t_target_image: sample_imgs_target})
+            print("[*] save images")
+            #learned_out = (learned_out - np.amin(learned_out))/(np.amax(learned_out) - np.amin(learned_out)) * 2 - 1
+            out_improved = out_original + learned_out
+            for img_idx in range(out_original.shape[0]):
+                tl.vis.save_image(out_original[img_idx], save_dir_model + '/train_{}_{}_original.png'.format(epoch,img_idx))
+                tl.vis.save_image(out_improved[img_idx], save_dir_model + '/train_{}_{}_improved.png'.format(epoch,img_idx))
+                tl.vis.save_image(diff_out[img_idx], save_dir_model + '/train_{}_{}_true_diff.png'.format(epoch,img_idx))
+                tl.vis.save_image(learned_out[img_idx], save_dir_model + '/train_{}_{}_learned_diff.png'.format(epoch,img_idx))
+                tl.vis.save_image(diff_intermediate[img_idx], save_dir_model + '/train_{}_{}_intermediate_diff.png'.format(epoch,img_idx))
+                tl.vis.save_image(out_intermediate[img_idx], save_dir_model + '/train_{}_{}_intermediate_out.png'.format(epoch,img_idx))
+                tl.vis.save_image(r_filter[img_idx], save_dir_model + '/train_{}_{}_random_filter.png'.format(epoch,img_idx))
+                tl.vis.save_image(diff_re[img_idx], save_dir_model + '/train_{}_{}_reconstruct_diff.png'.format(epoch,img_idx))
+
+        ## save model
+        if (epoch != 0) and (epoch % 10 == 0):
+            saver.save(sess, checkpoint_dir + '/texture_project.ckpt')
+
+
 
 
 def train_gradient(train_hr_imgs):
@@ -486,19 +879,14 @@ def train_gradient(train_hr_imgs):
     diff = t_target_image - net_g.outputs
     diff_positive = tf.keras.activations.relu(diff, threshold=.02)
     diff_negative = tf.multiply(tf.keras.activations.relu(tf.multiply(diff, -1), threshold=.02), -1)
-
     diff = tf.add(diff_negative, diff_positive)
     #mse_mask = tf.add(tf.multiply(tf.cast(tf.equal(diff, 0.), tf.float32), 3), 1)
     #penalized_output = tf.multiply(mse_mask, net_texture.outputs)
     diff_grad = tf.image.image_gradients(tf.image.rgb_to_grayscale(diff))
-    print(type(diff_grad))
-    print(type(diff_grad[0]))
-    print(type(diff_grad[1]))
-    print(diff_grad[0].shape)
-    print(diff_grad[1].shape)
     diff_grad = tf.stack([diff_grad[0], diff_grad[1]], axis = 3)
     output_grad = tf.image.image_gradients(tf.image.rgb_to_grayscale(net_texture.outputs))
     output_grad = tf.stack([output_grad[0], output_grad[1]], axis = 3)
+
     texture_loss = tf.losses.mean_squared_error(output_grad, diff_grad)
     sample_grad  = tf.image.image_gradients(tf.image.rgb_to_grayscale(net_texture_test.outputs))
     sample_grad = tf.stack([sample_grad[0], sample_grad[1]], axis = 3)
@@ -598,6 +986,8 @@ if __name__ == '__main__':
                 break
             train(i, train_hr_imgs)
         #train_gradient(train_hr_imgs)
-        train_texture(train_hr_imgs)
+        #train_texture(train_hr_imgs)
+        train_texture_projection(train_hr_imgs)
+        #train_texture_negative(train_hr_imgs)
     else:
         train(3, train_hr_imgs)
